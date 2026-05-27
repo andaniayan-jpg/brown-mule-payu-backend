@@ -1,0 +1,52 @@
+# Brown Mule PayU Backend Deployment
+
+This backend creates signed PayU checkout forms. Keep PayU secrets here, never in Shopify theme files.
+
+## Required Environment Variables
+
+Set these on the hosting provider:
+
+```env
+PAYU_ENV=production
+PAYU_KEY=<your PayU key>
+PAYU_SALT=<your PayU salt>
+PAYU_CLIENT_ID=<your PayU client id>
+PAYU_CLIENT_SECRET=<your PayU client secret>
+PAYU_DEFAULT_PHONE=9924800451
+PUBLIC_SITE_URL=https://your-backend-domain.com
+```
+
+`PUBLIC_SITE_URL` must be the deployed backend domain, for example:
+
+```text
+https://brown-mule-payu-backend.onrender.com
+```
+
+## Shopify Theme Setting
+
+After deploying the backend, open Shopify:
+
+```text
+Online Store -> Themes -> Customize -> Theme settings -> Brown Mule Payment
+```
+
+Set:
+
+```text
+Secure PayU checkout endpoint =
+https://your-backend-domain.com/api/payu/create-payment
+```
+
+## Test URLs
+
+Backend health:
+
+```text
+https://your-backend-domain.com/healthz
+```
+
+Expected:
+
+```json
+{"ok":true,"service":"brown-mule-payu"}
+```

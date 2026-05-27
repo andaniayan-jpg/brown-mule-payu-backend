@@ -1,0 +1,13 @@
+{
+  "name": "brown-mule-payu-backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "serve": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
