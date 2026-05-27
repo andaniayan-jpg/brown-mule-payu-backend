@@ -1,25 +1,29 @@
-services:
-  - type: web
-    name: brown-mule-payu-backend
-    runtime: node
-    plan: starter
-    buildCommand: npm install
-    startCommand: npm run serve
-    healthCheckPath: /healthz
-    envVars:
-      - key: NODE_VERSION
-        value: 22
-      - key: PAYU_ENV
-        value: production
-      - key: PAYU_KEY
-        sync: false
-      - key: PAYU_SALT
-        sync: false
-      - key: PAYU_CLIENT_ID
-        sync: false
-      - key: PAYU_CLIENT_SECRET
-        sync: false
-      - key: PAYU_DEFAULT_PHONE
-        value: 9924800451
-      - key: PUBLIC_SITE_URL
-        sync: false
+import http from 'node:http'
+import { handlePayuRequest } from './server/payu.mjs'
+
+const PORT = process.env.PORT || 10000
+
+const server = http.createServer(async (req, res) => {
+  try {
+    if (req.url === '/healthz') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, service: 'brown-mule-payu' }))
+      return
+    }
+
+    const handled = await handlePayuRequest(req, res)
+
+    if (!handled) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Not found' }))
+    }
+  } catch (error) {
+    console.error('Server error:', error)
+    res.writeHead(500, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Internal server error' }))
+  }
+})
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Brown Mule PayU backend running on port ${PORT}`)
+})
