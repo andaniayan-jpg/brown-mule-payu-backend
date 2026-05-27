@@ -5,14 +5,16 @@ const PORT = process.env.PORT || 10000
 
 const server = http.createServer(async (req, res) => {
   try {
-    // Health check route for Render and browser testing
-    if (req.url === '/healthz' && req.method === 'GET') {
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
+
+    // Health check route
+    if (url.pathname === '/healthz') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: true, service: 'brown-mule-payu' }))
       return
     }
 
-    // PayU routes from server/payu.mjs
+    // PayU routes
     const handled = await handlePayuRequest(req, res)
 
     if (!handled) {
