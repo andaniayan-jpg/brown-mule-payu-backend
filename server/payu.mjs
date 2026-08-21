@@ -9,11 +9,14 @@ const PAYU_PAYMENT_URLS = {
 }
 
 const PRODUCT_CATALOG = {
-  arabica: { name: 'Arabica Whole Bean', price: 750 },
-  'arabica-ground': { name: 'Arabica Ground Coffee', price: 750 },
+  arabica: { name: 'Arabica Whole Bean', price: 650 },
+  'arabica-ground': { name: 'Arabica Ground Coffee', price: 650 },
   robusta: { name: 'Robusta Whole Bean', price: 500 },
   'robusta-ground': { name: 'Robusta Ground Coffee', price: 500 },
 }
+
+const SHIPPING_INCLUSIVE_OF_GST = 120
+const MULE_DISCOUNT_CODE = 'MULE@5'
 
 const ORDER_STORE = path.resolve(process.cwd(), '.brown-mule-orders.json')
 
@@ -157,6 +160,7 @@ async function parseCheckoutPayload(req) {
 
   return {
     items,
+    couponCode: form.couponApplied || form.couponCode || '',
     customer: {
       name: form.customerName || form.name || '',
       email: form.customerEmail || form.email || '',
@@ -258,6 +262,19 @@ function getRequestOrigin(req) {
   return `${protocol}://${host}`
 }
 
+function catalogSlug(value) {
+  const rawSlug = String(value || '').trim().split('::')[0]
+
+  try {
+    return decodeURIComponent(rawSlug)
+      .replace(/^\/products\//i, '')
+      .replace(/^\/+|\/+$/g, '')
+      .toLowerCase()
+  } catch {
+    return rawSlug.replace(/^\/products\//i, '').replace(/^\/+|\/+$/g, '').toLowerCase()
+  }
+}
+
 function normalizeCartItems(items) {
   if (!Array.isArray(items)) {
     return []
@@ -265,23 +282,47 @@ function normalizeCartItems(items) {
 
   return items
     .map((item) => {
-      const product = PRODUCT_CATALOG[item?.slug]
+      const slug = catalogSlug(item?.slug)
+      const product = PRODUCT_CATALOG[slug]
       const quantity = Math.max(1, Math.min(20, Math.floor(Number(item?.quantity) || 1)))
+      const grindSize = String(item?.grindSize || '').trim().slice(0, 60)
 
       return product
         ? {
-            slug: item.slug,
+            slug,
             name: product.name,
             price: product.price,
             quantity,
+            grindSize,
           }
         : null
     })
     .filter(Boolean)
 }
 
+function calculateOrderTotals(items, couponCode) {
+  const subtotal = items.reduce((total, item) => total + item.price * item.quantity, 0)
+  const coffeeGst = Math.round(subtotal - subtotal / 1.05)
+  const shipping = items.length ? SHIPPING_INCLUSIVE_OF_GST : 0
+  const shippingGst = Math.round(shipping - shipping / 1.18)
+  const coupon = String(couponCode || '').trim().toUpperCase()
+  const discount = coupon === MULE_DISCOUNT_CODE ? Math.round(subtotal * 0.05) : 0
+
+  return {
+    subtotal,
+    coffeeGst,
+    shipping,
+    shippingGst,
+    discount,
+    total: Math.max(0, subtotal + shipping - discount),
+    coupon: discount ? MULE_DISCOUNT_CODE : '',
+  }
+}
+
 function buildProductInfo(items) {
-  return items.map((item) => `${item.name} x ${item.quantity}`).join(', ')
+  return items
+    .map((item) => `${item.name}${item.grindSize ? ` (${item.grindSize})` : ''} x ${item.quantity}`)
+    .join(', ')
 }
 
 async function rememberOrder(order) {
@@ -456,6 +497,7 @@ async function createPayuPayment(req, res) {
     const { key, salt, paymentUrl } = getPayuConfig()
     const payload = await parseCheckoutPayload(req)
     const items = normalizeCartItems(payload.items)
+    const totals = calculateOrderTotals(items, payload.couponCode)
     const customer = payload.customer || {}
     const firstname = String(customer.name || 'Brown Mule Customer').trim().slice(0, 60)
     const email = String(customer.email || '').trim().toLowerCase()
@@ -470,7 +512,10 @@ async function createPayuPayment(req, res) {
       return
     }
 
-    const amount = items.reduce((total, item) => total + item.price * item.quantity, 0).toFixed(2)
+    // Never sign a price sent by the browser. Recompute the final cart amount
+    // from the trusted catalog and the same inclusive shipping/coupon rules
+    // shown in the Brown Mule order summary.
+    const amount = totals.total.toFixed(2)
     const productinfo = buildProductInfo(items).slice(0, 100)
     const txnid = `BM${Date.now()}${crypto.randomBytes(3).toString('hex')}`
     const origin = getRequestOrigin(req)
@@ -505,6 +550,8 @@ async function createPayuPayment(req, res) {
       email,
       firstname,
       items,
+      totals,
+      coupon: totals.coupon,
       status: 'created',
       createdAt: new Date().toISOString(),
     })
