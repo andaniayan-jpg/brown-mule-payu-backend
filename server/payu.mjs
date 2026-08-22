@@ -322,7 +322,13 @@ function normalizeCartItems(items) {
     .map((item) => {
       const slug = catalogSlug(item?.slug)
       const product = PRODUCT_CATALOG[slug]
-      const quantity = Math.max(1, Math.min(20, Math.floor(Number(item?.quantity) || 1)))
+      const requestedQuantity = Number(item?.quantity)
+      // The storefront supports separate cart lines for every grind and does
+      // not impose a per-line quantity limit. Do not silently lower a valid
+      // quantity here, or PayU can receive less than the cart total.
+      const quantity = Number.isFinite(requestedQuantity)
+        ? Math.max(1, Math.floor(requestedQuantity))
+        : 1
       const grindSize = String(item?.grindSize || '').trim().slice(0, 60)
 
       return product

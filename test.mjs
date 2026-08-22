@@ -57,6 +57,26 @@ try {
   assert.match(page, /name="amount" value="6295\.00"/)
   assert.match(page, /name="productinfo" value="Arabica Ground Coffee \(Moka pot\) x 10"/)
 
+  const screenshotCart = new URLSearchParams({
+    customerName: 'Brown Mule Test',
+    customerEmail: 'test@example.com',
+    addressLine1: '12 Coffee Lane',
+    addressLine2: 'Koramangala, Bengaluru, 560034',
+    items: JSON.stringify([
+      { slug: 'arabica', quantity: 24, price: '650.00' },
+      { slug: 'robusta-ground::grind=inverted%20aero%20press', quantity: 8, price: '500.00', grindSize: 'Inverted aero press' },
+      { slug: 'robusta-ground::grind=espresso', quantity: 3, price: '500.00', grindSize: 'Espresso' },
+      { slug: 'robusta-ground::grind=french%20press', quantity: 20, price: '500.00', grindSize: 'French press' },
+    ]),
+  })
+  const screenshotResponse = await fetch(`${baseUrl}/api/payu/create-payment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: screenshotCart,
+  })
+  assert.equal(screenshotResponse.status, 200)
+  assert.match(await screenshotResponse.text(), /name="amount" value="31220\.00"/)
+
   const missingAddress = await fetch(`${baseUrl}/api/payu/create-payment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
