@@ -56,6 +56,7 @@ try {
   assert.equal(response.status, 200)
   assert.match(page, /name="amount" value="6295\.00"/)
   assert.match(page, /name="productinfo" value="Arabica Ground Coffee \(Moka pot\) x 10"/)
+  assert.match(page, new RegExp(`name="furl" value="${baseUrl}/payu/failure"`))
 
   const screenshotCart = new URLSearchParams({
     customerName: 'Brown Mule Test',
@@ -88,6 +89,15 @@ try {
   })
   assert.equal(missingAddress.status, 400)
   assert.match(await missingAddress.text(), /delivery address/i)
+
+  const cancelled = await fetch(`${baseUrl}/payu/failure`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ status: 'failure', txnid: 'BM-CANCELLED' }),
+  })
+  assert.equal(cancelled.status, 303)
+  assert.equal(cancelled.headers.get('location'), 'https://brownmule.in/cart?payment=cancelled&txnid=BM-CANCELLED')
   console.log('PayU amount test passed: ₹6,295.00')
 } finally {
   server.kill()

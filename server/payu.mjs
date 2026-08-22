@@ -268,8 +268,11 @@ function sendCheckoutError(req, res, message, statusCode = 400) {
   )
 }
 
-function getRequestOrigin(req) {
-  const configuredUrl = (process.env.PUBLIC_SITE_URL || process.env.RENDER_EXTERNAL_URL)?.replace(/\/$/, '')
+function getBackendOrigin(req) {
+  // PayU must post its result to this backend, not directly to Shopify.
+  // PUBLIC_SITE_URL has historically been set to the storefront in some
+  // deployments, which makes Shopify reject PayU's POST with a 403.
+  const configuredUrl = (process.env.PAYU_CALLBACK_ORIGIN || process.env.RENDER_EXTERNAL_URL)?.replace(/\/$/, '')
 
   if (configuredUrl) {
     return configuredUrl
@@ -278,6 +281,10 @@ function getRequestOrigin(req) {
   const protocol = req.headers['x-forwarded-proto'] || 'http'
   const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:5173'
   return `${protocol}://${host}`
+}
+
+function getStoreOrigin() {
+  return (process.env.BROWN_MULE_STORE_URL || 'https://brownmule.in').replace(/\/$/, '')
 }
 
 function catalogSlug(value) {
@@ -568,7 +575,7 @@ async function createPayuPayment(req, res) {
     const amount = totals.total.toFixed(2)
     const productinfo = buildProductInfo(items).slice(0, 100)
     const txnid = `BM${Date.now()}${crypto.randomBytes(3).toString('hex')}`
-    const origin = getRequestOrigin(req)
+    const origin = getBackendOrigin(req)
     const udf1 = 'Brown Mule'
     const udf2 = items.map((item) => `${item.slug}:${item.quantity}`).join(',')
     const udf3 = ''
@@ -626,6 +633,18 @@ async function handlePayuResult(req, res, isSuccess) {
     hashValid,
     receivedAt: new Date().toISOString(),
   })
+
+  if (!isSuccess) {
+    const returnUrl = new URL('/cart', getStoreOrigin())
+    returnUrl.searchParams.set('payment', 'cancelled')
+    if (fields.txnid) returnUrl.searchParams.set('txnid', fields.txnid)
+    res.writeHead(303, {
+      Location: returnUrl.toString(),
+      'Cache-Control': 'no-store',
+    })
+    res.end()
+    return
+  }
 
   sendHtml(
     res,
