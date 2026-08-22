@@ -38,6 +38,10 @@ try {
     customerName: 'Brown Mule Test',
     customerEmail: 'test@example.com',
     couponApplied: 'MULE@5',
+    addressLine1: '12 Coffee Lane',
+    addressLine2: 'Koramangala, Bengaluru, 560034',
+    addressLine3: 'Near the roastery',
+    shippingLocationSource: 'geolocation',
     items: JSON.stringify([
       { slug: 'arabica-ground::grind=moka%20pot', quantity: 10, price: '750.00', grindSize: 'Moka pot' },
     ]),
@@ -52,6 +56,18 @@ try {
   assert.equal(response.status, 200)
   assert.match(page, /name="amount" value="6295\.00"/)
   assert.match(page, /name="productinfo" value="Arabica Ground Coffee \(Moka pot\) x 10"/)
+
+  const missingAddress = await fetch(`${baseUrl}/api/payu/create-payment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      customerName: 'Brown Mule Test',
+      customerEmail: 'test@example.com',
+      items: JSON.stringify([{ slug: 'arabica-ground', quantity: 1 }]),
+    }),
+  })
+  assert.equal(missingAddress.status, 400)
+  assert.match(await missingAddress.text(), /delivery address/i)
   console.log('PayU amount test passed: ₹6,295.00')
 } finally {
   server.kill()

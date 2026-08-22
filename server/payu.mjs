@@ -144,7 +144,17 @@ async function parseCheckoutPayload(req) {
   const contentType = String(req.headers['content-type'] || '').toLowerCase()
 
   if (contentType.includes('application/json')) {
-    return parseJsonBody(req)
+    const payload = await parseJsonBody(req)
+    const customer = payload.customer || {}
+    return {
+      items: payload.items,
+      couponCode: payload.couponApplied || payload.couponCode || '',
+      customer: {
+        name: customer.name || payload.customerName || payload.name || '',
+        email: customer.email || payload.customerEmail || payload.email || '',
+      },
+      deliveryAddress: payload.deliveryAddress || payload.address || payload,
+    }
   }
 
   const form = await parseFormBody(req)
@@ -164,6 +174,14 @@ async function parseCheckoutPayload(req) {
     customer: {
       name: form.customerName || form.name || '',
       email: form.customerEmail || form.email || '',
+    },
+    deliveryAddress: {
+      addressLine1: form.addressLine1 || form.shippingAddressLine1 || '',
+      addressLine2: form.addressLine2 || form.shippingAddressLine2 || '',
+      addressLine3: form.addressLine3 || form.shippingAddressLine3 || '',
+      locationSource: form.shippingLocationSource || '',
+      latitude: form.shippingLatitude || '',
+      longitude: form.shippingLongitude || '',
     },
   }
 }
@@ -273,6 +291,26 @@ function catalogSlug(value) {
   } catch {
     return rawSlug.replace(/^\/products\//i, '').replace(/^\/+|\/+$/g, '').toLowerCase()
   }
+}
+
+function cleanAddressValue(value, maximumLength) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maximumLength)
+}
+
+function normalizeDeliveryAddress(value) {
+  const address = value && typeof value === 'object' ? value : {}
+  return {
+    addressLine1: cleanAddressValue(address.addressLine1 || address.shippingAddressLine1, 140),
+    addressLine2: cleanAddressValue(address.addressLine2 || address.shippingAddressLine2, 140),
+    addressLine3: cleanAddressValue(address.addressLine3 || address.shippingAddressLine3, 140),
+    locationSource: cleanAddressValue(address.locationSource || address.shippingLocationSource, 30) || 'manual',
+    latitude: cleanAddressValue(address.latitude || address.shippingLatitude, 30),
+    longitude: cleanAddressValue(address.longitude || address.shippingLongitude, 30),
+  }
+}
+
+function deliveryAddressIsComplete(address) {
+  return Boolean(address.addressLine1 && address.addressLine2)
 }
 
 function normalizeCartItems(items) {
@@ -499,6 +537,7 @@ async function createPayuPayment(req, res) {
     const items = normalizeCartItems(payload.items)
     const totals = calculateOrderTotals(items, payload.couponCode)
     const customer = payload.customer || {}
+    const deliveryAddress = normalizeDeliveryAddress(payload.deliveryAddress)
     const firstname = String(customer.name || 'Brown Mule Customer').trim().slice(0, 60)
     const email = String(customer.email || '').trim().toLowerCase()
 
@@ -509,6 +548,11 @@ async function createPayuPayment(req, res) {
 
     if (!email || !email.includes('@')) {
       sendCheckoutError(req, res, 'Please log in with a valid email before checkout.', 400)
+      return
+    }
+
+    if (!deliveryAddressIsComplete(deliveryAddress)) {
+      sendCheckoutError(req, res, 'Add and confirm your delivery address before secure payment.', 400)
       return
     }
 
@@ -552,6 +596,7 @@ async function createPayuPayment(req, res) {
       items,
       totals,
       coupon: totals.coupon,
+      deliveryAddress,
       status: 'created',
       createdAt: new Date().toISOString(),
     })
