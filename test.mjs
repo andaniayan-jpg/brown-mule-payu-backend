@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import { rm } from 'node:fs/promises'
 
 const port = 31337
@@ -12,6 +13,10 @@ const server = spawn(process.execPath, ['server.mjs'], {
     PAYU_KEY: 'test-key',
     PAYU_SALT: 'test-salt',
     PAYU_ENV: 'test',
+    RESEND_API_KEY: '',
+    ORDER_EMAIL_FROM: '',
+    WHATSAPP_ACCESS_TOKEN: '',
+    WHATSAPP_PHONE_NUMBER_ID: '',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -37,6 +42,7 @@ try {
   const payload = new URLSearchParams({
     customerName: 'Brown Mule Test',
     customerEmail: 'test@example.com',
+    customerPhone: '9876543210',
     couponApplied: 'MULE@5',
     addressLine1: '12 Coffee Lane',
     addressLine2: 'Koramangala, Bengaluru, 560034',
@@ -55,12 +61,14 @@ try {
 
   assert.equal(response.status, 200)
   assert.match(page, /name="amount" value="6295\.00"/)
+  assert.match(page, /name="phone" value="9876543210"/)
   assert.match(page, /name="productinfo" value="Arabica Ground Coffee \(Moka pot\) x 10"/)
   assert.match(page, new RegExp(`name="furl" value="${baseUrl}/payu/failure"`))
 
   const screenshotCart = new URLSearchParams({
     customerName: 'Brown Mule Test',
     customerEmail: 'test@example.com',
+    customerPhone: '9876543210',
     addressLine1: '12 Coffee Lane',
     addressLine2: 'Koramangala, Bengaluru, 560034',
     items: JSON.stringify([
@@ -78,7 +86,7 @@ try {
   assert.equal(screenshotResponse.status, 200)
   assert.match(await screenshotResponse.text(), /name="amount" value="31220\.00"/)
 
-  const missingAddress = await fetch(`${baseUrl}/api/payu/create-payment`, {
+  const deliveryStep = await fetch(`${baseUrl}/api/payu/create-payment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -87,8 +95,42 @@ try {
       items: JSON.stringify([{ slug: 'arabica-ground', quantity: 1 }]),
     }),
   })
-  assert.equal(missingAddress.status, 400)
-  assert.match(await missingAddress.text(), /delivery address/i)
+  assert.equal(deliveryStep.status, 200)
+  const deliveryPage = await deliveryStep.text()
+  assert.match(deliveryPage, /Delivery &amp; contact details/)
+  assert.match(deliveryPage, /Use my current location/)
+  assert.match(deliveryPage, /Continue to secure PayU payment/)
+
+  const txnid = page.match(/name="txnid" value="([^"]+)"/)[1]
+  const successFields = {
+    status: 'success',
+    txnid,
+    amount: '6295.00',
+    productinfo: 'Arabica Ground Coffee (Moka pot) x 10',
+    firstname: 'Brown Mule Test',
+    email: 'test@example.com',
+    phone: '9876543210',
+    key: 'test-key',
+    udf1: 'Brown Mule',
+    udf2: 'arabica-ground:10',
+    udf3: '12 Coffee Lane',
+    udf4: 'Koramangala, Bengaluru, 560034',
+    udf5: 'Near the roastery',
+  }
+  successFields.hash = crypto.createHash('sha512').update([
+    'test-salt', successFields.status, '', '', '', '', '', successFields.udf5,
+    successFields.udf4, successFields.udf3, successFields.udf2, successFields.udf1,
+    successFields.email, successFields.firstname, successFields.productinfo,
+    successFields.amount, successFields.txnid, successFields.key,
+  ].join('|')).digest('hex')
+  const confirmed = await fetch(`${baseUrl}/payu/success`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(successFields),
+  })
+  assert.equal(confirmed.status, 303)
+  assert.equal(confirmed.headers.get('location'), `https://brownmule.in/cart?payment=success&txnid=${txnid}`)
 
   const cancelled = await fetch(`${baseUrl}/payu/failure`, {
     method: 'POST',
