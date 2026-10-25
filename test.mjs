@@ -5,7 +5,7 @@ import { rm } from 'node:fs/promises'
 
 const port = 31337
 const baseUrl = `http://127.0.0.1:${port}`
-const orderStore = new URL('./.brown-mule-orders.json', import.meta.url)
+const orderStore = new URL('./.brown-mule-first-orders-test.json', import.meta.url)
 const server = spawn(process.execPath, ['server.mjs'], {
   env: {
     ...process.env,
@@ -13,6 +13,8 @@ const server = spawn(process.execPath, ['server.mjs'], {
     PAYU_KEY: 'test-key',
     PAYU_SALT: 'test-salt',
     PAYU_ENV: 'test',
+    BROWN_MULE_LOCAL_STORE: '1',
+    BROWN_MULE_LOCAL_STORE_PATH: '.brown-mule-first-orders-test.json',
     RESEND_API_KEY: '',
     ORDER_EMAIL_FROM: '',
     WHATSAPP_ACCESS_TOKEN: '',
@@ -60,7 +62,7 @@ try {
   const page = await response.text()
 
   assert.equal(response.status, 200)
-  assert.match(page, /name="amount" value="6295\.00"/)
+  assert.match(page, /name="amount" value="6289\.00"/)
   assert.match(page, /name="phone" value="9876543210"/)
   assert.match(page, /name="productinfo" value="Arabica Ground Coffee \(Moka pot\) x 10"/)
   assert.match(page, new RegExp(`name="furl" value="${baseUrl}/payu/failure"`))
@@ -105,7 +107,7 @@ try {
   const successFields = {
     status: 'success',
     txnid,
-    amount: '6295.00',
+    amount: '6289.00',
     productinfo: 'Arabica Ground Coffee (Moka pot) x 10',
     firstname: 'Brown Mule Test',
     email: 'test@example.com',
@@ -123,6 +125,13 @@ try {
     successFields.email, successFields.firstname, successFields.productinfo,
     successFields.amount, successFields.txnid, successFields.key,
   ].join('|')).digest('hex')
+  const tampered = await fetch(`${baseUrl}/payu/success`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ ...successFields, amount: '1.00' }),
+  })
+  assert.equal(tampered.headers.get('location'), `https://brownmule.in/cart?payment=cancelled&txnid=${txnid}`)
   const confirmed = await fetch(`${baseUrl}/payu/success`, {
     method: 'POST',
     redirect: 'manual',
@@ -132,6 +141,70 @@ try {
   assert.equal(confirmed.status, 303)
   assert.equal(confirmed.headers.get('location'), `https://brownmule.in/cart?payment=success&txnid=${txnid}`)
 
+  const repeatedQuote = await fetch(`${baseUrl}/api/payu/quote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customerPhone: '+91 98765 43210', couponCode: 'MULE@5', items: [{ slug: 'arabica', quantity: 1 }] }),
+  })
+  assert.equal(repeatedQuote.status, 200)
+  assert.deepEqual(await repeatedQuote.json(), {
+    eligible: false, subtotal: 650, shipping: 120, discount: 0, total: 770,
+    message: 'MULE@5 has already been used or reserved for this mobile number.',
+  })
+
+  const differentLogin = await fetch(`${baseUrl}/api/payu/create-payment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ ...Object.fromEntries(payload), customerEmail: 'another-account@example.com' }),
+  })
+  const differentLoginPage = await differentLogin.text()
+  assert.match(differentLoginPage, /MULE@5 is for the first paid order on this mobile number/)
+  assert.match(differentLoginPage, /₹6620\.00/)
+  assert.doesNotMatch(differentLoginPage, /name="amount" value="6289\.00"/)
+
+  const quote = await fetch(`${baseUrl}/api/payu/quote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customerPhone: '8765432109', couponCode: 'MULE@5', items: [{ slug: 'robusta', quantity: 1 }] }),
+  })
+  assert.deepEqual(await quote.json(), {
+    eligible: true, subtotal: 500, shipping: 120, discount: 31, total: 589,
+    message: 'MULE@5 is available for this mobile number.',
+  })
+
+  const competing = await Promise.all([1, 2].map(() => fetch(`${baseUrl}/api/payu/create-payment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ ...Object.fromEntries(payload), customerPhone: '8765432109' }),
+  }).then((response) => response.text())))
+  assert.equal(competing.filter((html) => /name="amount" value="6289\.00"/.test(html)).length, 1)
+  assert.equal(competing.filter((html) => /Another checkout has reserved MULE@5/.test(html) || /MULE@5 is for the first paid order/.test(html)).length, 1)
+
+  const retryPhone = '8765432108'
+  const retryForm = new URLSearchParams({ ...Object.fromEntries(payload), customerPhone: retryPhone })
+  const retryStart = await fetch(`${baseUrl}/api/payu/create-payment`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: retryForm,
+  })
+  const retryPage = await retryStart.text()
+  const retryTxnid = retryPage.match(/name="txnid" value="([^"]+)"/)[1]
+  const failureFields = { ...successFields, status: 'failure', txnid: retryTxnid, phone: retryPhone }
+  failureFields.hash = crypto.createHash('sha512').update([
+    'test-salt', failureFields.status, '', '', '', '', '', failureFields.udf5,
+    failureFields.udf4, failureFields.udf3, failureFields.udf2, failureFields.udf1,
+    failureFields.email, failureFields.firstname, failureFields.productinfo,
+    failureFields.amount, failureFields.txnid, failureFields.key,
+  ].join('|')).digest('hex')
+  const failedPayment = await fetch(`${baseUrl}/payu/failure`, {
+    method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(failureFields),
+  })
+  assert.equal(failedPayment.status, 303)
+  const retryQuote = await fetch(`${baseUrl}/api/payu/quote`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customerPhone: retryPhone, couponCode: 'MULE@5', items: [{ slug: 'arabica', quantity: 1 }] }),
+  })
+  assert.equal((await retryQuote.json()).eligible, true)
+
   const cancelled = await fetch(`${baseUrl}/payu/failure`, {
     method: 'POST',
     redirect: 'manual',
@@ -140,7 +213,7 @@ try {
   })
   assert.equal(cancelled.status, 303)
   assert.equal(cancelled.headers.get('location'), 'https://brownmule.in/cart?payment=cancelled&txnid=BM-CANCELLED')
-  console.log('PayU amount test passed: ₹6,295.00')
+  console.log('PayU first-order phone discount tests passed: ₹6,289.00')
 } finally {
   server.kill()
   await rm(orderStore, { force: true })
