@@ -4,7 +4,7 @@ The `MULE@5` code gives 5% off the coffee and shipping total on the first **paid
 
 ## Production setup
 
-Set `DATABASE_URL` to a persistent PostgreSQL database on the PayU web service. Neon's Free plan is one no-cost option; use its pooled connection string with `sslmode=require`. The service creates `bm_payu_checkouts` and `bm_payu_coupon_claims` on first use. Keep the existing `PAYU_KEY`, `PAYU_SALT`, `PAYU_ENV`, `BROWN_MULE_STORE_URL`, and notification settings. The backend accepts regular checkout without a database, but disables `MULE@5` until persistent storage is configured. A free Render Postgres instance expires after 30 days, so it is unsuitable for live redemption history.
+Set `DATABASE_URL` to a persistent PostgreSQL database on the PayU web service. Neon's Free plan is one no-cost option. Use a database owned by the application role so that role can create `bm_payu_checkouts` and `bm_payu_coupon_claims` on first use. The direct Neon connection string with `sslmode=verify-full` works for this single-instance service; a pooled connection can be used after the tables exist. Keep the existing `PAYU_KEY`, `PAYU_SALT`, `PAYU_ENV`, `BROWN_MULE_STORE_URL`, and notification settings. The backend accepts regular checkout without a database, but disables `MULE@5` until persistent storage is configured. A free Render Postgres instance expires after 30 days, so it is unsuitable for live redemption history.
 
 If the store already has paid orders, import their normalized checkout mobile numbers before enabling the code. The user confirmed there are currently no past paid orders, so no backfill is needed for this launch.
 
