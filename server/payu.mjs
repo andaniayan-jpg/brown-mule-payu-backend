@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { firstOrderEligible, createCheckout, getCheckout, finishCheckout } from './first-order.mjs'
 
 const PAYU_PAYMENT_URLS = {
   production: 'https://secure.payu.in/_payment',
@@ -17,8 +17,6 @@ const PRODUCT_CATALOG = {
 
 const SHIPPING_INCLUSIVE_OF_GST = 120
 const MULE_DISCOUNT_CODE = 'MULE@5'
-
-const ORDER_STORE = path.resolve(process.cwd(), '.brown-mule-orders.json')
 
 let envLoaded = false
 
@@ -341,7 +339,7 @@ function normalizePhone(value) {
     digits = digits.slice(2)
   }
 
-  return digits.slice(0, 10)
+  return digits.length === 10 ? digits : ''
 }
 
 function phoneIsValid(phone) {
@@ -389,7 +387,7 @@ function calculateOrderTotals(items, couponCode) {
   const shipping = items.length ? SHIPPING_INCLUSIVE_OF_GST : 0
   const shippingGst = Math.round(shipping - shipping / 1.18)
   const coupon = String(couponCode || '').trim().toUpperCase()
-  const discount = coupon === MULE_DISCOUNT_CODE ? Math.round(subtotal * 0.05) : 0
+  const discount = coupon === MULE_DISCOUNT_CODE ? Math.round((subtotal + shipping) * 0.05) : 0
 
   return {
     subtotal,
@@ -408,35 +406,11 @@ function buildProductInfo(items) {
     .join(', ')
 }
 
-async function rememberOrder(order) {
-  let orders = []
-
-  try {
-    orders = JSON.parse(await fs.readFile(ORDER_STORE, 'utf8'))
-  } catch {
-    orders = []
-  }
-
-  orders.push(order)
-  await fs.writeFile(ORDER_STORE, JSON.stringify(orders.slice(-200), null, 2))
-}
-
-async function findCreatedOrder(txnid) {
-  if (!txnid) return null
-
-  try {
-    const orders = JSON.parse(await fs.readFile(ORDER_STORE, 'utf8'))
-    return [...orders].reverse().find((order) => order.txnid === txnid && Array.isArray(order.items)) || null
-  } catch {
-    return null
-  }
-}
-
 function hiddenInput(name, value) {
   return `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}" />`
 }
 
-function checkoutDetailsPage({ items, totals, customer, deliveryAddress, message = '' }) {
+function checkoutDetailsPage({ items, totals, customer, deliveryAddress, couponCode = '', message = '' }) {
   const safeCustomer = customer || {}
   const safeAddress = deliveryAddress || {}
   const serializedItems = JSON.stringify(items.map((item) => ({
@@ -499,7 +473,7 @@ function checkoutDetailsPage({ items, totals, customer, deliveryAddress, message
         ${formMessage}
         <form method="post" action="/api/payu/create-payment" novalidate>
           ${hiddenInput('items', serializedItems)}
-          ${hiddenInput('couponApplied', totals.coupon)}
+          ${hiddenInput('couponApplied', couponCode)}
           ${hiddenInput('shippingLocationSource', safeAddress.locationSource || 'manual')}
           ${hiddenInput('shippingLatitude', safeAddress.latitude || '')}
           ${hiddenInput('shippingLongitude', safeAddress.longitude || '')}
@@ -520,6 +494,7 @@ function checkoutDetailsPage({ items, totals, customer, deliveryAddress, message
       <aside aria-label="Order summary">
         <h2>Order summary</h2>
         <p class="items">${itemSummary}</p>
+        ${totals.discount ? `<p class="total"><span>MULE@5 discount</span><strong>-₹${escapeHtml(totals.discount.toFixed(2))}</strong></p>` : ''}
         <p class="total"><span>Total payable</span><strong>₹${escapeHtml(totals.total.toFixed(2))}</strong></p>
         <p class="fine-print">This amount includes shipping and all applicable GST, after any eligible discount. The same total is sent to PayU.</p>
       </aside>
@@ -638,11 +613,11 @@ function notificationOrderFromCallback(fields, storedOrder) {
 
   return {
     txnid: fields.txnid || customer.txnid || '',
-    amount: fields.amount || customer.amount || '',
-    firstname: normalizeCustomerName(fields.firstname || customer.firstname || 'Brown Mule Customer'),
-    email: normalizeEmail(fields.email || customer.email || ''),
-    phone: normalizePhone(fields.phone || customer.phone || ''),
-    deliveryAddress: deliveryAddressIsComplete(callbackAddress) ? callbackAddress : (customer.deliveryAddress || callbackAddress),
+    amount: customer.amount || fields.amount || '',
+    firstname: normalizeCustomerName(customer.firstname || fields.firstname || 'Brown Mule Customer'),
+    email: normalizeEmail(customer.email || fields.email || ''),
+    phone: normalizePhone(customer.phone || fields.phone || ''),
+    deliveryAddress: customer.deliveryAddress || callbackAddress,
     items: customer.items || [],
     totals: customer.totals || { total: Number(fields.amount || 0) },
   }
@@ -930,7 +905,7 @@ async function createPayuPayment(req, res) {
     const { key, salt, paymentUrl } = getPayuConfig()
     const payload = await parseCheckoutPayload(req)
     const items = normalizeCartItems(payload.items)
-    const totals = calculateOrderTotals(items, payload.couponCode)
+    const couponRequested = String(payload.couponCode || '').trim().toUpperCase() === MULE_DISCOUNT_CODE
     const customer = payload.customer || {}
     const deliveryAddress = normalizeDeliveryAddress(payload.deliveryAddress)
     const firstname = normalizeCustomerName(customer.name)
@@ -942,7 +917,11 @@ async function createPayuPayment(req, res) {
       return
     }
 
-    if (!firstname || !emailIsValid(email) || !phoneIsValid(phone) || !deliveryAddressIsComplete(deliveryAddress)) {
+    const validPhone = phoneIsValid(phone)
+    const eligible = couponRequested && validPhone ? await firstOrderEligible(phone) : false
+    const totals = calculateOrderTotals(items, eligible ? MULE_DISCOUNT_CODE : '')
+
+    if (!firstname || !emailIsValid(email) || !validPhone || !deliveryAddressIsComplete(deliveryAddress)) {
       if (requestWantsJson(req)) {
         sendCheckoutError(req, res, 'Complete your name, email, 10-digit mobile number, and delivery address before secure payment.', 400)
         return
@@ -953,7 +932,19 @@ async function createPayuPayment(req, res) {
         totals,
         customer: { name: firstname, email, phone },
         deliveryAddress,
+        couponCode: couponRequested ? MULE_DISCOUNT_CODE : '',
         message: 'Please complete your name, email, 10-digit mobile number, and delivery address to continue.',
+      }))
+      return
+    }
+
+    if (couponRequested && !eligible) {
+      sendHtml(res, checkoutDetailsPage({
+        items,
+        totals,
+        customer: { name: firstname, email, phone },
+        deliveryAddress,
+        message: 'MULE@5 is for the first paid order on this mobile number. The code was removed; review the full amount before continuing.',
       }))
       return
     }
@@ -992,7 +983,7 @@ async function createPayuPayment(req, res) {
       hash: sha512(hashString),
     }
 
-    await rememberOrder({
+    const order = {
       txnid,
       amount,
       email,
@@ -1004,30 +995,55 @@ async function createPayuPayment(req, res) {
       deliveryAddress,
       status: 'created',
       createdAt: new Date().toISOString(),
-    })
-
+    }
+    if (!await createCheckout(order)) {
+      sendHtml(res, checkoutDetailsPage({
+        items,
+        totals: calculateOrderTotals(items, ''),
+        customer: { name: firstname, email, phone },
+        deliveryAddress,
+        message: 'Another checkout has reserved MULE@5 for this mobile number. Review the full amount before continuing.',
+      }))
+      return
+    }
     sendHtml(res, paymentFormPage(paymentUrl, fields))
   } catch (error) {
-    sendCheckoutError(req, res, error instanceof Error ? error.message : 'Payment could not be started.', 500)
+    sendCheckoutError(req, res, error instanceof Error ? error.message : 'Payment could not be started.', 503)
   }
 }
 
-async function handlePayuResult(req, res, isSuccess) {
+async function quoteFirstOrder(req, res) {
+  try {
+    const payload = await parseCheckoutPayload(req)
+    const items = normalizeCartItems(payload.items)
+    const phone = normalizePhone(payload.customer?.phone)
+    const coupon = String(payload.couponCode || '').trim().toUpperCase()
+    if (!items.length || !phoneIsValid(phone) || coupon !== MULE_DISCOUNT_CODE) {
+      sendJson(res, { error: 'Enter MULE@5 and a valid 10-digit order mobile number.' }, 400)
+      return
+    }
+    const eligible = await firstOrderEligible(phone)
+    const totals = calculateOrderTotals(items, eligible ? MULE_DISCOUNT_CODE : '')
+    sendJson(res, { eligible, subtotal: totals.subtotal, shipping: totals.shipping, discount: totals.discount, total: totals.total,
+      message: eligible ? 'MULE@5 is available for this mobile number.' : 'MULE@5 has already been used or reserved for this mobile number.' })
+  } catch {
+    sendJson(res, { error: 'Coupon eligibility could not be checked right now.' }, 503)
+  }
+}
+
+async function handlePayuResult(req, res) {
   const { salt } = getPayuConfig()
   const fields = req.method === 'POST' ? await parseFormBody(req) : Object.fromEntries(new URL(req.url, 'http://localhost').searchParams.entries())
   const hashValid = fields.hash ? validatePayuResponse(fields, salt) : false
 
-  const createdOrder = await findCreatedOrder(fields.txnid)
-  const confirmed = isSuccess && String(fields.status || '').toLowerCase() === 'success' && hashValid
-
-  await rememberOrder({
-    txnid: fields.txnid || '',
-    amount: fields.amount || '',
-    email: fields.email || '',
-    status: confirmed ? 'success' : (fields.status || (isSuccess ? 'success' : 'failure')),
-    hashValid,
-    receivedAt: new Date().toISOString(),
-  })
+  const createdOrder = await getCheckout(fields.txnid)
+  const matchesOrder = createdOrder &&
+    fields.amount === createdOrder.amount &&
+    normalizeEmail(fields.email) === createdOrder.email &&
+    fields.productinfo === buildProductInfo(createdOrder.items).slice(0, 100) &&
+    fields.key === getPayuConfig().key
+  const confirmed = Boolean(String(fields.status || '').toLowerCase() === 'success' && hashValid && matchesOrder)
+  const newlyConfirmed = createdOrder && hashValid && matchesOrder ? await finishCheckout(fields.txnid, confirmed) : false
 
   if (!confirmed) {
     const returnUrl = new URL('/cart', getStoreOrigin())
@@ -1044,7 +1060,7 @@ async function handlePayuResult(req, res, isSuccess) {
   // A notification failure must never turn a paid order into an error page.
   // Awaiting here only gives the message providers the confirmed details
   // before the customer sees their order-complete screen.
-  await sendOrderNotifications(notificationOrderFromCallback(fields, createdOrder))
+  if (newlyConfirmed) await sendOrderNotifications(notificationOrderFromCallback(fields, createdOrder))
 
   const returnUrl = new URL('/cart', getStoreOrigin())
   returnUrl.searchParams.set('payment', 'success')
@@ -1059,18 +1075,38 @@ async function handlePayuResult(req, res, isSuccess) {
 export async function handlePayuRequest(req, res) {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
 
+  if (url.pathname === '/api/payu/quote') {
+    const origin = String(req.headers.origin || '')
+    const allowed = new Set([getStoreOrigin(), 'https://www.brownmule.in', 'http://127.0.0.1:8765', 'http://localhost:8765'])
+    if (origin && allowed.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Vary', 'Origin')
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(origin && !allowed.has(origin) ? 403 : 204)
+      res.end()
+      return true
+    }
+    if (req.method === 'POST') {
+      await quoteFirstOrder(req, res)
+      return true
+    }
+  }
+
   if (url.pathname === '/api/payu/create-payment' && req.method === 'POST') {
     await createPayuPayment(req, res)
     return true
   }
 
   if (url.pathname === '/payu/success') {
-    await handlePayuResult(req, res, true)
+    await handlePayuResult(req, res)
     return true
   }
 
   if (url.pathname === '/payu/failure') {
-    await handlePayuResult(req, res, false)
+    await handlePayuResult(req, res)
     return true
   }
 

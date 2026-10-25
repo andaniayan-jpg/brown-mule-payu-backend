@@ -8,7 +8,9 @@
     "start": "node server.mjs",
     "test": "node test.mjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "pg": "^8.0.0"
+  },
   "engines": {
     "node": "20.x"
   }
