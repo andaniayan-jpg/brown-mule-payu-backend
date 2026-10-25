@@ -147,6 +147,7 @@ async function parseCheckoutPayload(req) {
     return {
       items: payload.items,
       couponCode: payload.couponApplied || payload.couponCode || '',
+      checkoutReturnOrigin: payload.checkoutReturnOrigin || '',
       customer: {
         name: customer.name || payload.customerName || payload.name || '',
         email: customer.email || payload.customerEmail || payload.email || '',
@@ -170,6 +171,7 @@ async function parseCheckoutPayload(req) {
   return {
     items,
     couponCode: form.couponApplied || form.couponCode || '',
+    checkoutReturnOrigin: form.checkoutReturnOrigin || '',
     customer: {
       name: form.customerName || form.name || '',
       email: form.customerEmail || form.email || '',
@@ -285,6 +287,34 @@ function getBackendOrigin(req) {
 
 function getStoreOrigin() {
   return (process.env.BROWN_MULE_STORE_URL || 'https://brownmule.in').replace(/\/$/, '')
+}
+
+function safeCheckoutReturnOrigin(requested) {
+  const fallback = new URL(getStoreOrigin()).origin
+  try {
+    const origin = new URL(String(requested || '')).origin
+    return new Set([fallback, 'https://www.brownmule.in', 'http://127.0.0.1:8765', 'http://localhost:8765']).has(origin)
+      ? origin
+      : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function checkoutReturnUrl(origin, payment, coupon = '') {
+  const url = new URL('/cart', safeCheckoutReturnOrigin(origin))
+  url.searchParams.set('payment', payment)
+  if (coupon) url.searchParams.set('coupon', coupon)
+  if (payment !== 'success') url.hash = '/checkout'
+  return url
+}
+
+function redirectToModernCheckout(res, origin, reason, coupon = '') {
+  res.writeHead(303, {
+    Location: checkoutReturnUrl(origin, reason, coupon).toString(),
+    'Cache-Control': 'no-store',
+  })
+  res.end()
 }
 
 function catalogSlug(value) {
@@ -906,6 +936,8 @@ async function createPayuPayment(req, res) {
     const payload = await parseCheckoutPayload(req)
     const items = normalizeCartItems(payload.items)
     const couponRequested = String(payload.couponCode || '').trim().toUpperCase() === MULE_DISCOUNT_CODE
+    const modernCheckout = Boolean(payload.checkoutReturnOrigin)
+    const checkoutReturnOrigin = safeCheckoutReturnOrigin(payload.checkoutReturnOrigin)
     const customer = payload.customer || {}
     const deliveryAddress = normalizeDeliveryAddress(payload.deliveryAddress)
     const firstname = normalizeCustomerName(customer.name)
@@ -927,6 +959,11 @@ async function createPayuPayment(req, res) {
         return
       }
 
+      if (modernCheckout) {
+        redirectToModernCheckout(res, checkoutReturnOrigin, 'details-required', couponRequested ? MULE_DISCOUNT_CODE : '')
+        return
+      }
+
       sendHtml(res, checkoutDetailsPage({
         items,
         totals,
@@ -939,6 +976,10 @@ async function createPayuPayment(req, res) {
     }
 
     if (couponRequested && !eligible) {
+      if (modernCheckout) {
+        redirectToModernCheckout(res, checkoutReturnOrigin, 'coupon-unavailable', MULE_DISCOUNT_CODE)
+        return
+      }
       sendHtml(res, checkoutDetailsPage({
         items,
         totals,
@@ -973,8 +1014,8 @@ async function createPayuPayment(req, res) {
       firstname,
       email,
       phone,
-      surl: `${origin}/payu/success`,
-      furl: `${origin}/payu/failure`,
+      surl: `${origin}/payu/success?txnid=${encodeURIComponent(txnid)}`,
+      furl: `${origin}/payu/failure?txnid=${encodeURIComponent(txnid)}`,
       udf1,
       udf2,
       udf3,
@@ -993,10 +1034,15 @@ async function createPayuPayment(req, res) {
       totals,
       coupon: totals.coupon,
       deliveryAddress,
+      checkoutReturnOrigin,
       status: 'created',
       createdAt: new Date().toISOString(),
     }
     if (!await createCheckout(order)) {
+      if (modernCheckout) {
+        redirectToModernCheckout(res, checkoutReturnOrigin, 'coupon-unavailable', MULE_DISCOUNT_CODE)
+        return
+      }
       sendHtml(res, checkoutDetailsPage({
         items,
         totals: calculateOrderTotals(items, ''),
@@ -1033,7 +1079,9 @@ async function quoteFirstOrder(req, res) {
 
 async function handlePayuResult(req, res) {
   const { salt } = getPayuConfig()
-  const fields = req.method === 'POST' ? await parseFormBody(req) : Object.fromEntries(new URL(req.url, 'http://localhost').searchParams.entries())
+  const callbackQuery = Object.fromEntries(new URL(req.url, 'http://localhost').searchParams.entries())
+  const fields = req.method === 'POST' ? await parseFormBody(req) : callbackQuery
+  if (!fields.txnid) fields.txnid = callbackQuery.txnid || ''
   const hashValid = fields.hash ? validatePayuResponse(fields, salt) : false
 
   const createdOrder = await getCheckout(fields.txnid)
@@ -1046,8 +1094,7 @@ async function handlePayuResult(req, res) {
   const newlyConfirmed = createdOrder && hashValid && matchesOrder ? await finishCheckout(fields.txnid, confirmed) : false
 
   if (!confirmed) {
-    const returnUrl = new URL('/cart', getStoreOrigin())
-    returnUrl.searchParams.set('payment', 'cancelled')
+    const returnUrl = checkoutReturnUrl(createdOrder?.checkoutReturnOrigin, 'cancelled', createdOrder?.coupon || '')
     if (fields.txnid) returnUrl.searchParams.set('txnid', fields.txnid)
     res.writeHead(303, {
       Location: returnUrl.toString(),
@@ -1062,8 +1109,7 @@ async function handlePayuResult(req, res) {
   // before the customer sees their order-complete screen.
   if (newlyConfirmed) await sendOrderNotifications(notificationOrderFromCallback(fields, createdOrder))
 
-  const returnUrl = new URL('/cart', getStoreOrigin())
-  returnUrl.searchParams.set('payment', 'success')
+  const returnUrl = checkoutReturnUrl(createdOrder?.checkoutReturnOrigin, 'success')
   if (fields.txnid) returnUrl.searchParams.set('txnid', fields.txnid)
   res.writeHead(303, {
     Location: returnUrl.toString(),
