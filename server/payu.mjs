@@ -305,8 +305,29 @@ function checkoutReturnUrl(origin, payment, coupon = '') {
   const url = new URL('/cart', safeCheckoutReturnOrigin(origin))
   url.searchParams.set('payment', payment)
   if (coupon) url.searchParams.set('coupon', coupon)
-  if (payment !== 'success') url.hash = '/checkout'
+  url.hash = '/checkout'
   return url
+}
+
+function checkoutReturnTokenMatches(order, token) {
+  if (!order?.returnToken || !/^[a-f0-9]{48}$/.test(String(token || ''))) return false
+  const expected = Buffer.from(order.returnToken, 'hex')
+  const supplied = Buffer.from(token, 'hex')
+  return expected.length === supplied.length && crypto.timingSafeEqual(expected, supplied)
+}
+
+async function checkoutStatus(req, res, url) {
+  res.setHeader('Cache-Control', 'no-store')
+  const order = await getCheckout(url.searchParams.get('txnid'))
+  if (!checkoutReturnTokenMatches(order, url.searchParams.get('token'))) {
+    sendJson(res, { error: 'Order status unavailable.' }, 404)
+    return
+  }
+  sendJson(res, {
+    status: order.status === 'success' ? 'success' : order.status === 'failure' ? 'cancelled' : 'pending',
+    txnid: order.txnid,
+    amount: order.amount,
+  })
 }
 
 function redirectToModernCheckout(res, origin, reason, coupon = '') {
@@ -1026,6 +1047,7 @@ async function createPayuPayment(req, res) {
 
     const order = {
       txnid,
+      returnToken: crypto.randomBytes(24).toString('hex'),
       amount,
       email,
       phone,
@@ -1091,14 +1113,17 @@ async function handlePayuResult(req, res) {
     fields.productinfo === buildProductInfo(createdOrder.items).slice(0, 100) &&
     fields.key === getPayuConfig().key
   const confirmed = Boolean(String(fields.status || '').toLowerCase() === 'success' && hashValid && matchesOrder)
-  const newlyConfirmed = createdOrder && hashValid && matchesOrder ? await finishCheckout(fields.txnid, confirmed) : false
+  const verified = Boolean(createdOrder && hashValid && matchesOrder)
+  const newlyConfirmed = verified ? await finishCheckout(fields.txnid, confirmed) : false
 
   if (!confirmed) {
-    const returnUrl = checkoutReturnUrl(createdOrder?.checkoutReturnOrigin, 'cancelled', createdOrder?.coupon || '')
+    const returnUrl = checkoutReturnUrl(createdOrder?.checkoutReturnOrigin, verified ? 'cancelled' : 'incomplete', createdOrder?.coupon || '')
     if (fields.txnid) returnUrl.searchParams.set('txnid', fields.txnid)
+    if (createdOrder?.returnToken) returnUrl.searchParams.set('token', createdOrder.returnToken)
     res.writeHead(303, {
       Location: returnUrl.toString(),
       'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
     })
     res.end()
     return
@@ -1111,9 +1136,11 @@ async function handlePayuResult(req, res) {
 
   const returnUrl = checkoutReturnUrl(createdOrder?.checkoutReturnOrigin, 'success')
   if (fields.txnid) returnUrl.searchParams.set('txnid', fields.txnid)
+  if (createdOrder?.returnToken) returnUrl.searchParams.set('token', createdOrder.returnToken)
   res.writeHead(303, {
     Location: returnUrl.toString(),
     'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
   })
   res.end()
 }
@@ -1121,13 +1148,13 @@ async function handlePayuResult(req, res) {
 export async function handlePayuRequest(req, res) {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
 
-  if (url.pathname === '/api/payu/quote') {
+  if (url.pathname === '/api/payu/quote' || url.pathname === '/api/payu/status') {
     const origin = String(req.headers.origin || '')
     const allowed = new Set([getStoreOrigin(), 'https://www.brownmule.in', 'http://127.0.0.1:8765', 'http://localhost:8765'])
     if (origin && allowed.has(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin)
       res.setHeader('Vary', 'Origin')
-      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     }
     if (req.method === 'OPTIONS') {
@@ -1136,7 +1163,13 @@ export async function handlePayuRequest(req, res) {
       return true
     }
     if (req.method === 'POST') {
-      await quoteFirstOrder(req, res)
+      if (url.pathname === '/api/payu/quote') {
+        await quoteFirstOrder(req, res)
+        return true
+      }
+    }
+    if (req.method === 'GET' && url.pathname === '/api/payu/status') {
+      await checkoutStatus(req, res, url)
       return true
     }
   }
