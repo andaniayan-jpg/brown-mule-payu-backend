@@ -2,7 +2,9 @@
 
 The `MULE@5` code gives 5% off the coffee and shipping total on the first **paid** order for the 10-digit Indian mobile number entered at checkout. Login method and account email are not part of eligibility. The browser displays a quote, but the backend recalculates catalog prices, checks the phone, reserves the code, and signs that final amount for PayU.
 
-After PayU returns a verified success, the backend creates a paid Shopify Admin order when `SHOPIFY_STORE_DOMAIN` and `SHOPIFY_ADMIN_ACCESS_TOKEN` are configured. The Shopify order includes the customer details, delivery address, coffee lines and grind sizes, paid amount, PayU transaction ID, and coupon details. Repeated callbacks are checked against the transaction note to prevent duplicate Shopify orders.
+After PayU returns a verified success, the backend creates a paid Shopify Admin order when `SHOPIFY_STORE_DOMAIN` plus either the current Dev Dashboard credentials (`SHOPIFY_CLIENT_ID` and `SHOPIFY_CLIENT_SECRET`) or a legacy `SHOPIFY_ADMIN_ACCESS_TOKEN` are configured. The Shopify order includes the customer details, delivery address, coffee lines and grind sizes, paid amount, PayU transaction ID, and coupon details. Repeated callbacks are checked against the transaction note to prevent duplicate Shopify orders. Dev Dashboard credentials are exchanged for and cached as a short-lived Shopify token automatically.
+
+The custom app needs `read_orders` and `write_orders` access. `read_orders` lets the backend check for a duplicate PayU transaction before creating an order.
 
 ## Production setup
 

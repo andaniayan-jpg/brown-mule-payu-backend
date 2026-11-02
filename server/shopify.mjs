@@ -1,4 +1,5 @@
 const DEFAULT_API_VERSION = '2025-10'
+const tokenCache = new Map()
 
 function shopifyConfig() {
   const domain = String(process.env.SHOPIFY_STORE_DOMAIN || '')
@@ -6,12 +7,16 @@ function shopifyConfig() {
     .replace(/^https?:\/\//i, '')
     .replace(/\/$/, '')
   const token = String(process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || '').trim()
+  const clientId = String(process.env.SHOPIFY_CLIENT_ID || '').trim()
+  const clientSecret = String(process.env.SHOPIFY_CLIENT_SECRET || '').trim()
 
-  if (!domain || !token) return null
+  if (!domain || (!token && (!clientId || !clientSecret))) return null
 
   return {
     domain,
     token,
+    clientId,
+    clientSecret,
     apiVersion: String(process.env.SHOPIFY_ADMIN_API_VERSION || DEFAULT_API_VERSION).trim(),
   }
 }
@@ -131,12 +136,13 @@ function orderPayload(order) {
 }
 
 async function shopifyRequest(config, url, options = {}) {
+  const token = await getShopifyToken(config)
   const response = await fetch(url, {
     ...options,
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': config.token,
+      'X-Shopify-Access-Token': token,
       ...(options.headers || {}),
     },
   })
@@ -148,6 +154,39 @@ async function shopifyRequest(config, url, options = {}) {
     throw new Error(`Shopify Admin API order request failed: ${message}`)
   }
   return body
+}
+
+async function getShopifyToken(config) {
+  if (config.token) return config.token
+
+  const cacheKey = `${config.domain}:${config.clientId}`
+  const cached = tokenCache.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token
+
+  const response = await fetch(`https://${config.domain}/admin/oauth/access_token`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+    }),
+  })
+  const text = await response.text()
+  let body
+  try { body = text ? JSON.parse(text) : {} } catch { body = { raw: text.slice(0, 500) } }
+  if (!response.ok || !body.access_token) {
+    const message = body?.errors ? JSON.stringify(body.errors) : `HTTP ${response.status}`
+    throw new Error(`Shopify access token request failed: ${message}`)
+  }
+
+  const expiresIn = Math.max(300, Number(body.expires_in) || 86_399)
+  const token = String(body.access_token)
+  tokenCache.set(cacheKey, { token, expiresAt: Date.now() + expiresIn * 1000 })
+  return token
 }
 
 async function findExistingOrder(config, txnid) {
@@ -162,7 +201,7 @@ async function findExistingOrder(config, txnid) {
 export async function createShopifyOrder(order) {
   const config = shopifyConfig()
   if (!config) {
-    console.info('Shopify order creation skipped: set SHOPIFY_STORE_DOMAIN and SHOPIFY_ADMIN_ACCESS_TOKEN.')
+    console.info('Shopify order creation skipped: set SHOPIFY_STORE_DOMAIN plus SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET (or a legacy SHOPIFY_ADMIN_ACCESS_TOKEN).')
     return { skipped: true }
   }
 
