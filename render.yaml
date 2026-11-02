@@ -14,6 +14,10 @@ PAYU_CLIENT_ID=<your PayU client id>
 PAYU_CLIENT_SECRET=<your PayU client secret>
 PAYU_DEFAULT_PHONE=9924800451
 PUBLIC_SITE_URL=https://your-backend-domain.com
+# Shopify Admin API order sync (create a custom app with write_orders access)
+SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
+SHOPIFY_ADMIN_ACCESS_TOKEN=shpat_...
+SHOPIFY_ADMIN_API_VERSION=2025-10
 ```
 
 `PUBLIC_SITE_URL` must be the deployed backend domain, for example:
@@ -36,6 +40,12 @@ Set:
 Secure PayU checkout endpoint =
 https://your-backend-domain.com/api/payu/create-payment
 ```
+
+After adding the Shopify variables, every verified PayU success creates a paid Shopify
+order with the customer contact details, delivery address, line items, paid amount,
+PayU transaction ID, and coupon information. The backend checks for an existing PayU
+transaction note before creating an order again, so repeated PayU callbacks do not
+duplicate it.
 
 ## Test URLs
 

@@ -14,6 +14,22 @@ ORDER_EMAIL_TO=brownmule01@gmail.com
 
 The recipient defaults to `brownmule01@gmail.com`. The email contains the paid order number, name, email, mobile number, delivery address, items, and paid total.
 
+## Shopify Admin order sync
+
+Create a Shopify custom app for the store and grant it `write_orders` access. Add these
+Render environment variables:
+
+```text
+SHOPIFY_STORE_DOMAIN=your-store.myshopify.com
+SHOPIFY_ADMIN_ACCESS_TOKEN=shpat_...
+SHOPIFY_ADMIN_API_VERSION=2025-10
+```
+
+After PayU confirms a payment, the backend creates a paid Shopify order containing the
+customer details, delivery address, line items, paid total, PayU transaction ID, and
+coupon information. If the variables are missing, PayU payments still work and the
+backend keeps the order record, but no Shopify Admin order is created.
+
 ## WhatsApp confirmation to the customer
 
 Use a Meta WhatsApp Business Account and create an approved utility template named `brown_mule_order_confirmation` with four body variables:

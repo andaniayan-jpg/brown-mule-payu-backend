@@ -2,6 +2,8 @@
 
 The `MULE@5` code gives 5% off the coffee and shipping total on the first **paid** order for the 10-digit Indian mobile number entered at checkout. Login method and account email are not part of eligibility. The browser displays a quote, but the backend recalculates catalog prices, checks the phone, reserves the code, and signs that final amount for PayU.
 
+After PayU returns a verified success, the backend creates a paid Shopify Admin order when `SHOPIFY_STORE_DOMAIN` and `SHOPIFY_ADMIN_ACCESS_TOKEN` are configured. The Shopify order includes the customer details, delivery address, coffee lines and grind sizes, paid amount, PayU transaction ID, and coupon details. Repeated callbacks are checked against the transaction note to prevent duplicate Shopify orders.
+
 ## Production setup
 
 Set `DATABASE_URL` to a persistent PostgreSQL database on the PayU web service. Neon's Free plan is one no-cost option. Use a database owned by the application role so that role can create `bm_payu_checkouts` and `bm_payu_coupon_claims` on first use. The direct Neon connection string with `sslmode=verify-full` works for this single-instance service; a pooled connection can be used after the tables exist. Keep the existing `PAYU_KEY`, `PAYU_SALT`, `PAYU_ENV`, `BROWN_MULE_STORE_URL`, and notification settings. The backend accepts regular checkout without a database, but disables `MULE@5` until persistent storage is configured. A free Render Postgres instance expires after 30 days, so it is unsuitable for live redemption history.

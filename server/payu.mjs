@@ -1,7 +1,8 @@
 import crypto from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { firstOrderEligible, createCheckout, getCheckout, finishCheckout } from './first-order.mjs'
+import { firstOrderEligible, createCheckout, getCheckout, finishCheckout, attachShopifyOrder } from './first-order.mjs'
+import { createShopifyOrder } from './shopify.mjs'
 
 const PAYU_PAYMENT_URLS = {
   production: 'https://secure.payu.in/_payment',
@@ -1132,7 +1133,24 @@ async function handlePayuResult(req, res) {
   // A notification failure must never turn a paid order into an error page.
   // Awaiting here only gives the message providers the confirmed details
   // before the customer sees their order-complete screen.
-  if (newlyConfirmed) await sendOrderNotifications(notificationOrderFromCallback(fields, createdOrder))
+  if (confirmed) {
+    const storedConfirmedOrder = await getCheckout(fields.txnid) || createdOrder
+    const confirmedOrder = notificationOrderFromCallback(fields, storedConfirmedOrder)
+    try {
+      if (!storedConfirmedOrder?.shopifyOrderId) {
+        const shopifyOrder = await createShopifyOrder(confirmedOrder)
+        if (shopifyOrder?.id) {
+          await attachShopifyOrder(fields.txnid, shopifyOrder)
+          console.info(`Shopify order created for PayU transaction ${fields.txnid}: ${shopifyOrder.name || shopifyOrder.id}`)
+        }
+      }
+    } catch (error) {
+      // Keep the payment confirmation successful even if Shopify is temporarily unavailable.
+      // The transaction remains in the backend database for a safe retry or manual recovery.
+      console.error('Shopify order creation failed:', error)
+    }
+    if (newlyConfirmed) await sendOrderNotifications(confirmedOrder)
+  }
 
   const returnUrl = checkoutReturnUrl(createdOrder?.checkoutReturnOrigin, 'success')
   if (fields.txnid) returnUrl.searchParams.set('txnid', fields.txnid)

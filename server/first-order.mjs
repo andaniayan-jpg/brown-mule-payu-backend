@@ -138,6 +138,35 @@ export async function getCheckout(txnid) {
   return result.rows[0] ? { ...result.rows[0].order_data, status: result.rows[0].status } : null
 }
 
+export async function attachShopifyOrder(txnid, shopifyOrder) {
+  if (!txnid || !shopifyOrder?.id) return false
+  const patch = {
+    shopifyOrderId: String(shopifyOrder.id),
+    shopifyOrderNumber: shopifyOrder.name || shopifyOrder.order_number || '',
+    shopifyOrderUrl: shopifyOrder.admin_graphql_api_id || '',
+    shopifyOrderCreatedAt: new Date().toISOString(),
+  }
+  const pool = await database()
+  if (!pool) {
+    if (!localMode) return false
+    return withLocalLock((data) => {
+      const order = data.checkouts[txnid]
+      if (!order) return { value: false }
+      Object.assign(order, patch)
+      return { changed: true, value: true }
+    })
+  }
+
+  const result = await pool.query(
+    `UPDATE bm_payu_checkouts
+      SET order_data = order_data || $2::jsonb, updated_at = now()
+      WHERE txnid = $1
+      RETURNING txnid`,
+    [txnid, JSON.stringify(patch)],
+  )
+  return result.rowCount > 0
+}
+
 export async function finishCheckout(txnid, confirmed) {
   const pool = await database()
   if (!pool) return withLocalLock((data) => {
