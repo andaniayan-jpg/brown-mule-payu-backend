@@ -35,9 +35,13 @@ function clean(value, max = 255) {
 
 function splitName(value) {
   const parts = clean(value, 120).split(/\s+/).filter(Boolean)
+  const firstName = parts.shift() || 'Brown Mule'
   return {
-    firstName: parts.shift() || 'Brown Mule Customer',
-    lastName: parts.join(' '),
+    firstName,
+    // Shopify rejects an order customer with an empty last_name. PayU checkout
+    // accepts a single full-name field, so use a neutral fallback when the
+    // customer entered only one name.
+    lastName: parts.join(' ') || 'Customer',
   }
 }
 
