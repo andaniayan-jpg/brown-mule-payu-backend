@@ -119,7 +119,6 @@ function orderPayload(order) {
         first_name: clean(name.firstName, 60),
         last_name: clean(name.lastName, 60),
         email: clean(order.email, 120),
-        phone: clean(order.phone, 20),
       },
       line_items: lineItems(order),
       shipping_lines: [{
