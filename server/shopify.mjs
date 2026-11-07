@@ -183,7 +183,7 @@ async function getShopifyToken(config) {
       .filter((value) => typeof value === 'string' && value.trim())
       .join(': ')
     const message = details || (body?.errors ? JSON.stringify(body.errors) : `HTTP ${response.status}`)
-    throw new Error(`Shopify access token request failed: ${message}`)
+    throw new Error(`Shopify access token request for ${config.domain} failed: ${message}`)
   }
 
   const expiresIn = Math.max(300, Number(body.expires_in) || 86_399)
