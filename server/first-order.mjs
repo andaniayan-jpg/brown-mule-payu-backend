@@ -138,6 +138,25 @@ export async function getCheckout(txnid) {
   return result.rows[0] ? { ...result.rows[0].order_data, status: result.rows[0].status } : null
 }
 
+export async function listShopifySyncPending(limit = 50) {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(Number(limit) || 50)))
+  const pool = await database()
+  if (!pool) {
+    if (!localMode) return []
+    return withLocalLock((data) => ({
+      value: Object.values(data.checkouts)
+        .filter((order) => order.status === 'success' && !order.shopifyOrderId)
+        .slice(0, safeLimit),
+    }))
+  }
+  const result = await pool.query(`SELECT order_data
+    FROM bm_payu_checkouts
+    WHERE status = 'success' AND order_data->>'shopifyOrderId' IS NULL
+    ORDER BY updated_at DESC
+    LIMIT $1`, [safeLimit])
+  return result.rows.map((row) => row.order_data)
+}
+
 export async function attachShopifyOrder(txnid, shopifyOrder) {
   if (!txnid || !shopifyOrder?.id) return false
   const patch = {

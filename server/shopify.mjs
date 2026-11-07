@@ -179,7 +179,10 @@ async function getShopifyToken(config) {
   let body
   try { body = text ? JSON.parse(text) : {} } catch { body = { raw: text.slice(0, 500) } }
   if (!response.ok || !body.access_token) {
-    const message = body?.errors ? JSON.stringify(body.errors) : `HTTP ${response.status}`
+    const details = [body?.error, body?.error_description]
+      .filter((value) => typeof value === 'string' && value.trim())
+      .join(': ')
+    const message = details || (body?.errors ? JSON.stringify(body.errors) : `HTTP ${response.status}`)
     throw new Error(`Shopify access token request failed: ${message}`)
   }
 

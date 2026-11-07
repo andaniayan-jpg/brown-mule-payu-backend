@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { handlePayuRequest } from './server/payu.mjs'
+import { handlePayuRequest, retryPendingShopifyOrders } from './server/payu.mjs'
 
 const PORT = process.env.PORT || 10000
 
@@ -35,4 +35,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Brown Mule PayU backend running on port ${PORT}`)
+  retryPendingShopifyOrders().catch((error) => console.error('Shopify order recovery scan failed:', error))
 })

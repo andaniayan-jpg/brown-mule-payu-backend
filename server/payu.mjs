@@ -1,8 +1,8 @@
 import crypto from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { firstOrderEligible, createCheckout, getCheckout, finishCheckout, attachShopifyOrder } from './first-order.mjs'
-import { createShopifyOrder } from './shopify.mjs'
+import { firstOrderEligible, createCheckout, getCheckout, finishCheckout, attachShopifyOrder, listShopifySyncPending } from './first-order.mjs'
+import { createShopifyOrder, shopifyOrdersEnabled } from './shopify.mjs'
 
 const PAYU_PAYMENT_URLS = {
   production: 'https://secure.payu.in/_payment',
@@ -672,6 +672,22 @@ function notificationOrderFromCallback(fields, storedOrder) {
     deliveryAddress: customer.deliveryAddress || callbackAddress,
     items: customer.items || [],
     totals: customer.totals || { total: Number(fields.amount || 0) },
+  }
+}
+
+export async function retryPendingShopifyOrders() {
+  if (!shopifyOrdersEnabled()) return
+  const orders = await listShopifySyncPending()
+  for (const order of orders) {
+    try {
+      const shopifyOrder = await createShopifyOrder(order)
+      if (shopifyOrder?.id) {
+        await attachShopifyOrder(order.txnid, shopifyOrder)
+        console.info(`Recovered Shopify order for PayU transaction ${order.txnid}: ${shopifyOrder.name || shopifyOrder.id}`)
+      }
+    } catch (error) {
+      console.error(`Shopify recovery failed for PayU transaction ${order.txnid}:`, error)
+    }
   }
 }
 
