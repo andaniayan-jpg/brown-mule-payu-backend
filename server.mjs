@@ -1,5 +1,6 @@
 import http from 'node:http'
 import { handlePayuRequest, retryPendingShopifyOrders } from './server/payu.mjs'
+import { handleWhatsappWebhook } from './server/customer-messages.mjs'
 
 const PORT = process.env.PORT || 10000
 
@@ -13,6 +14,8 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true, service: 'brown-mule-payu' }))
       return
     }
+
+    if (await handleWhatsappWebhook(req, res, url)) return
 
     // PayU routes
     const handled = await handlePayuRequest(req, res)

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { firstOrderEligible, createCheckout, getCheckout, finishCheckout, attachShopifyOrder, listShopifySyncPending } from './first-order.mjs'
 import { createShopifyOrder, shopifyOrdersEnabled } from './shopify.mjs'
+import { sendCustomerConfirmations } from './customer-messages.mjs'
 
 const PAYU_PAYMENT_URLS = {
   production: 'https://secure.payu.in/_payment',
@@ -149,6 +150,7 @@ async function parseCheckoutPayload(req) {
       items: payload.items,
       couponCode: payload.couponApplied || payload.couponCode || '',
       checkoutReturnOrigin: payload.checkoutReturnOrigin || '',
+      whatsappOptIn: payload.whatsappOptIn === true,
       customer: {
         name: customer.name || payload.customerName || payload.name || '',
         email: customer.email || payload.customerEmail || payload.email || '',
@@ -173,6 +175,7 @@ async function parseCheckoutPayload(req) {
     items,
     couponCode: form.couponApplied || form.couponCode || '',
     checkoutReturnOrigin: form.checkoutReturnOrigin || '',
+    whatsappOptIn: form.whatsappOptIn === 'yes',
     customer: {
       name: form.customerName || form.name || '',
       email: form.customerEmail || form.email || '',
@@ -672,6 +675,8 @@ function notificationOrderFromCallback(fields, storedOrder) {
     deliveryAddress: customer.deliveryAddress || callbackAddress,
     items: customer.items || [],
     totals: customer.totals || { total: Number(fields.amount || 0) },
+    shopifyOrderNumber: customer.shopifyOrderNumber || '',
+    whatsappOptIn: customer.whatsappOptIn === true,
   }
 }
 
@@ -753,60 +758,8 @@ async function sendOrderEmail(order) {
   return { sent: true }
 }
 
-function whatsappRecipient(phone) {
-  const normalized = normalizePhone(phone)
-  return normalized ? `91${normalized}` : ''
-}
-
-async function sendWhatsappConfirmation(order) {
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID
-  const recipient = whatsappRecipient(order.phone)
-
-  if (!accessToken || !phoneNumberId || !recipient) {
-    console.info('WhatsApp confirmation skipped: set WhatsApp credentials and collect a valid customer phone number.')
-    return { skipped: true }
-  }
-
-  const templateName = process.env.WHATSAPP_TEMPLATE_NAME || 'brown_mule_order_confirmation'
-  const languageCode = process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US'
-  const total = String(order.amount || Number(order.totals?.total || 0).toFixed(2))
-  const address = formatDeliveryAddress(order.deliveryAddress || {}) || 'your saved delivery address'
-  const response = await fetchWithTimeout(`https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_API_VERSION || 'v22.0'}/${phoneNumberId}/messages`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to: recipient,
-      type: 'template',
-      template: {
-        name: templateName,
-        language: { code: languageCode },
-        components: [{
-          type: 'body',
-          parameters: [
-            { type: 'text', text: order.firstname || 'Customer' },
-            { type: 'text', text: order.txnid || '-' },
-            { type: 'text', text: `₹${total}` },
-            { type: 'text', text: address },
-          ],
-        }],
-      },
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`WhatsApp confirmation failed (${response.status}).`)
-  }
-
-  return { sent: true }
-}
-
 async function sendOrderNotifications(order) {
-  const outcomes = await Promise.allSettled([sendOrderEmail(order), sendWhatsappConfirmation(order)])
+  const outcomes = await Promise.allSettled([sendOrderEmail(order), sendCustomerConfirmations(order)])
   outcomes.forEach((outcome) => {
     if (outcome.status === 'rejected') {
       console.error('Order notification failed:', outcome.reason)
@@ -1073,6 +1026,7 @@ async function createPayuPayment(req, res) {
       totals,
       coupon: totals.coupon,
       deliveryAddress,
+      whatsappOptIn: payload.whatsappOptIn === true,
       checkoutReturnOrigin,
       status: 'created',
       createdAt: new Date().toISOString(),
@@ -1157,6 +1111,7 @@ async function handlePayuResult(req, res) {
         const shopifyOrder = await createShopifyOrder(confirmedOrder)
         if (shopifyOrder?.id) {
           await attachShopifyOrder(fields.txnid, shopifyOrder)
+          confirmedOrder.shopifyOrderNumber = shopifyOrder.name || ''
           console.info(`Shopify order created for PayU transaction ${fields.txnid}: ${shopifyOrder.name || shopifyOrder.id}`)
         }
       }

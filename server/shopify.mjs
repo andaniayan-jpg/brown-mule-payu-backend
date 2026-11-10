@@ -110,7 +110,7 @@ function orderPayload(order) {
       phone: clean(order.phone, 20),
       financial_status: 'paid',
       currency: 'INR',
-      send_receipt: false,
+      send_receipt: true,
       send_fulfillment_receipt: false,
       tags: 'Brown Mule, PayU, paid',
       note: `Paid through PayU. Transaction ID: ${clean(order.txnid, 80)}`,

@@ -31,6 +31,12 @@ async function database() {
         status text NOT NULL,
         expires_at timestamptz NOT NULL
       )`)
+      await pool.query(`CREATE TABLE IF NOT EXISTS bm_payu_message_delivery (
+        txnid text PRIMARY KEY,
+        whatsapp_message_id text UNIQUE,
+        sms_state text NOT NULL DEFAULT 'none',
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`)
       return pool
     })().catch((error) => {
       poolPromise = undefined
@@ -38,6 +44,58 @@ async function database() {
     })
   }
   return poolPromise
+}
+
+export async function recordWhatsappMessage(txnid, messageId) {
+  if (!txnid || !messageId) return
+  const pool = await database()
+  if (!pool) return withLocalLock((data) => {
+    if (!data.checkouts[txnid]) return { value: false }
+    data.checkouts[txnid].whatsappMessageId = messageId
+    return { changed: true, value: true }
+  })
+  await pool.query(`INSERT INTO bm_payu_message_delivery (txnid, whatsapp_message_id)
+    VALUES ($1, $2) ON CONFLICT (txnid) DO UPDATE SET
+    whatsapp_message_id = EXCLUDED.whatsapp_message_id, updated_at = now()`, [txnid, messageId])
+}
+
+export async function checkoutForWhatsappMessage(messageId) {
+  if (!messageId) return null
+  const pool = await database()
+  if (!pool) return withLocalLock((data) => ({
+    value: Object.values(data.checkouts).find((order) => order.whatsappMessageId === messageId && order.status === 'success') || null,
+  }))
+  const result = await pool.query(`SELECT c.order_data FROM bm_payu_message_delivery m
+    JOIN bm_payu_checkouts c ON c.txnid = m.txnid
+    WHERE m.whatsapp_message_id = $1 AND c.status = 'success'`, [messageId])
+  return result.rows[0]?.order_data || null
+}
+
+export async function claimSmsFallback(txnid) {
+  const pool = await database()
+  if (!pool) return withLocalLock((data) => {
+    const order = data.checkouts[txnid]
+    if (!order || order.status !== 'success' || ['sending', 'sent'].includes(order.smsState)) return { value: false }
+    order.smsState = 'sending'
+    return { changed: true, value: true }
+  })
+  const result = await pool.query(`INSERT INTO bm_payu_message_delivery (txnid, sms_state)
+    SELECT txnid, 'sending' FROM bm_payu_checkouts WHERE txnid = $1 AND status = 'success'
+    ON CONFLICT (txnid) DO UPDATE SET sms_state = 'sending', updated_at = now()
+    WHERE bm_payu_message_delivery.sms_state NOT IN ('sending', 'sent')
+    RETURNING txnid`, [txnid])
+  return result.rowCount > 0
+}
+
+export async function completeSmsFallback(txnid, sent) {
+  const pool = await database()
+  if (!pool) return withLocalLock((data) => {
+    if (!data.checkouts[txnid]) return { value: false }
+    data.checkouts[txnid].smsState = sent ? 'sent' : 'retry'
+    return { changed: true, value: true }
+  })
+  await pool.query(`UPDATE bm_payu_message_delivery SET sms_state = $2, updated_at = now()
+    WHERE txnid = $1`, [txnid, sent ? 'sent' : 'retry'])
 }
 
 async function readLocal() {
